@@ -27,22 +27,44 @@ jobs:
     - name: Install NDK
       run: sdkmanager "ndk;25.2.9519653" "cmake;3.22.1"
 
-    # 1. تحميل مكتبة FFmpeg (ضرورية لعمل الكود، لا يمكن إزالتها وإلا سيفشل البناء)
+    # 1. تحميل مكتبة FFmpeg (ضرورية لتحويل الصوت)
     - name: Download FFmpeg Kit
       run: |
+        echo "Creating libs directory..."
         mkdir -p examples/whisper.android/app/libs
+        
+        echo "Downloading FFmpeg AAR..."
         curl -L -o examples/whisper.android/app/libs/ffmpeg-kit.aar "https://artifactory.appodeal.com/appodeal-public/com/arthenica/ffmpeg-kit-full-gpl/6.0-2.LTS/ffmpeg-kit-full-gpl-6.0-2.LTS.aar"
+        
+        ls -lh examples/whisper.android/app/libs/
 
-    # (تم حذف خطوة تحميل وحقن النموذج من هنا)
+    # 2. تحميل وحقن نموذج Small (الذكاء الاصطناعي)
+    - name: Download and Inject Whisper Model
+      run: |
+        echo "Creating assets directory..."
+        # إنشاء المسار الصحيح لمجلد النماذج داخل التطبيق
+        mkdir -p examples/whisper.android/app/src/main/assets/models
+        
+        cd examples/whisper.android/app/src/main/assets/models
+        
+        echo "Downloading ggml-small.bin..."
+        # رابط مباشر وسريع للنموذج من HuggingFace
+        curl -L -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+        
+        echo "Model file info:"
+        ls -lh
 
     - name: Build APK
       run: |
         cd examples/whisper.android
         chmod +x gradlew
+        
+        echo "Building Debug APK..."
         ./gradlew assembleDebug --stacktrace
 
     - name: Upload APK
       uses: actions/upload-artifact@v4
       with:
-        name: whisper-app-no-model
+        # سيظهر الملف بهذا الاسم في صفحة التحميل
+        name: whisper-app-small-included
         path: examples/whisper.android/app/build/outputs/apk/debug/app-debug.apk
