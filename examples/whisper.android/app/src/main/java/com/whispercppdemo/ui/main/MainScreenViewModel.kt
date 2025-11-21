@@ -53,15 +53,14 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
     }
 
     private suspend fun loadData() {
-        printMessage("Initializing...\n")
+        printMessage("Loading data...\n")
         try {
-            // لم نعد بحاجة لنسخ النموذج للخارج، سنقرأه من Assets مباشرة
-            // copyAssets() 
+            copyAssets()
             loadBaseModel()
             canTranscribe = true
         } catch (e: Exception) {
             Log.w(LOG_TAG, e)
-            printMessage("Error: ${e.localizedMessage}\n")
+            printMessage("${e.localizedMessage}\n")
         }
     }
 
@@ -69,26 +68,44 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         dataLog += msg
     }
 
-    // تحميل النموذج المحقون في التطبيق
+    private suspend fun copyAssets() = withContext(Dispatchers.IO) {
+        if (!modelsPath.exists()) modelsPath.mkdirs()
+        if (!samplesPath.exists()) samplesPath.mkdirs()
+        application.copyData("samples", samplesPath, ::printMessage)
+    }
+
     private suspend fun loadBaseModel() = withContext(Dispatchers.IO) {
-        printMessage("Loading Embedded Model (Small)...\n")
+        printMessage("Loading Small model...\n")
         val models = application.assets.list("models")
         if (models != null && models.isNotEmpty()) {
-            // هذه الدالة تقرأ النموذج مباشرة من داخل الـ APK دون الحاجة لنسخه
             whisperContext = WhisperContext.createContextFromAsset(application.assets, "models/" + models[0])
-            printMessage("Model Loaded Successfully: ${models[0]}.\n")
+            printMessage("Loaded model ${models[0]}.\n")
         } else {
-            printMessage("❌ Error: No embedded model found!\n")
+            printMessage("No models found in assets.\n")
         }
     }
 
-    private fun formatSrtTime(timeInMs: Long): String {
-        val sec = timeInMs / 1000
-        val m = timeInMs % 1000
-        val s = sec % 60
-        val min = (sec / 60) % 60
-        val h = sec / 3600
-        return "%02d:%02d:%02d,%03d".format(h, min, s, m)
+    // --- تم إصلاح دالة البنشمارك ---
+    fun benchmark() = viewModelScope.launch {
+        if (!canTranscribe) return@launch
+        canTranscribe = false
+        printMessage("Running benchmark...\n")
+        withContext(Dispatchers.IO) {
+            whisperContext?.benchMemory(6)?.let { printMessage(it) }
+            printMessage("\n")
+            whisperContext?.benchGgmlMulMat(6)?.let { printMessage(it) }
+        }
+        canTranscribe = true
+    }
+
+    // --- تم إصلاح دالة العينة ---
+    fun transcribeSample() = viewModelScope.launch {
+        val files = samplesPath.listFiles()
+        if (files != null && files.isNotEmpty()) {
+            transcribeAudio(files.first())
+        } else {
+            printMessage("No sample files found.\n")
+        }
     }
 
     private suspend fun transcribeAudio(file: File) {
@@ -100,38 +117,17 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
             val data = withContext(Dispatchers.IO) { decodeWaveFile(file) }
             val start = System.currentTimeMillis()
             
-            withContext(Dispatchers.IO) {
+            // المكتبة الحالية تدعم فقط إرجاع النص كاملاً
+            val text = withContext(Dispatchers.IO) {
                 whisperContext?.transcribeData(data)
             }
             
             val elapsed = System.currentTimeMillis() - start
-            
-            // محاولة بناء SRT
-            try {
-                val sb = StringBuilder()
-                val segmentCount = whisperContext?.textSegmentCount ?: 0
-                
-                if (segmentCount > 0) {
-                    for (i in 0 until segmentCount) {
-                        val text = whisperContext?.getTextSegment(i) ?: ""
-                        val startTime = (whisperContext?.getTextSegmentStartTime(i) ?: 0) * 10
-                        val endTime = (whisperContext?.getTextSegmentEndTime(i) ?: 0) * 10
-                        
-                        sb.append("${i + 1}\n")
-                        sb.append("${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n")
-                        sb.append("${text.trim()}\n\n")
-                    }
-                    val srtContent = sb.toString()
-                    printMessage("Done ($elapsed ms).\n")
-                    saveSrtToFile(srtContent)
-                } else {
-                    val text = whisperContext?.transcribeData(data)
-                    printMessage("Done ($elapsed ms).\n")
-                    if (!text.isNullOrEmpty()) saveSrtToFile(text, isPlainText = true)
-                }
-            } catch (e: Exception) {
-                val text = whisperContext?.transcribeData(data)
-                if (!text.isNullOrEmpty()) saveSrtToFile(text, isPlainText = true)
+            printMessage("Done ($elapsed ms): \n$text\n")
+
+            // حفظ النص في ملف
+            if (!text.isNullOrEmpty()) {
+                saveTextToFile(text)
             }
 
         } catch (e: Exception) {
@@ -142,16 +138,16 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         canTranscribe = true
     }
 
-    private suspend fun saveSrtToFile(content: String, isPlainText: Boolean = false) = withContext(Dispatchers.IO) {
+    // دالة حفظ النص (بدلاً من SRT لأن التوقيت غير مدعوم حالياً)
+    private suspend fun saveTextToFile(text: String) = withContext(Dispatchers.IO) {
         try {
             val path = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-            val ext = if (isPlainText) "txt" else "srt"
-            val fileName = "whisper_${System.currentTimeMillis()}.$ext"
+            val fileName = "whisper_${System.currentTimeMillis()}.txt"
             val file = File(path, fileName)
-            file.writeText(content)
-            printMessage("\n✅ Saved: ${file.absolutePath}\n")
+            file.writeText(text)
+            printMessage("\n✅ Text Saved to Downloads: ${file.name}\n")
         } catch (e: Exception) {
-            printMessage("\n❌ Save failed. Grant Permissions manually.\n")
+            printMessage("\n❌ Save failed. Check Permissions manually.\n")
         }
     }
 
@@ -165,16 +161,17 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
                     java.io.FileOutputStream(inputFile).use { output -> input.copyTo(output) }
                 }
                 
+                // التحويل باستخدام FFmpeg
                 val outputFile = File.createTempFile("converted", ".wav", application.cacheDir)
                 val cmd = "-y -i \"${inputFile.absolutePath}\" -ar 16000 -ac 1 -c:a pcm_s16le \"${outputFile.absolutePath}\""
                 
                 val session = FFmpegKit.execute(cmd)
                 
                 if (ReturnCode.isSuccess(session.returnCode)) {
-                    printMessage("✅ Converted. Starting...\n")
+                    printMessage("✅ Converted. Transcribing...\n")
                     transcribeAudio(outputFile)
                 } else {
-                    printMessage("❌ Conversion Failed.\n")
+                    printMessage("❌ Conversion failed.\n")
                 }
             } catch (e: Exception) {
                 printMessage("Error: ${e.message}\n")
@@ -227,6 +224,26 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
             initializer {
                 val application = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as Application
                 MainScreenViewModel(application)
+            }
+        }
+    }
+}
+
+private suspend fun Context.copyData(
+    assetDirName: String,
+    destDir: File,
+    printMessage: suspend (String) -> Unit
+) = withContext(Dispatchers.IO) {
+    assets.list(assetDirName)?.forEach { name ->
+        val assetPath = "$assetDirName/$name"
+        val destFile = File(destDir, name)
+        if (!destFile.exists()) {
+            try {
+                assets.open(assetPath).use { input ->
+                    java.io.FileOutputStream(destFile).use { output -> input.copyTo(output) }
+                }
+            } catch (e: Exception) {
+                Log.e(LOG_TAG, "Failed copy", e)
             }
         }
     }
