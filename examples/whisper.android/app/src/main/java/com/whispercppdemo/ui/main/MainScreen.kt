@@ -7,13 +7,15 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.isGranted
 import com.google.accompanist.permissions.rememberPermissionState
+// مكتبة الأذونات المتعددة
+import com.google.accompanist.permissions.rememberMultiplePermissionsState
 import com.whispercppdemo.R
 
 @Composable
@@ -29,7 +31,7 @@ fun MainScreen(viewModel: MainScreenViewModel) {
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalPermissionsApi::class)
 @Composable
 private fun MainScreen(
     canTranscribe: Boolean,
@@ -40,6 +42,22 @@ private fun MainScreen(
     onRecordTapped: () -> Unit,
     onFileSelected: (android.net.Uri) -> Unit
 ) {
+    // --- كود طلب صلاحيات الملفات (جديد) ---
+    val storagePermissions = rememberMultiplePermissionsState(
+        permissions = listOf(
+            android.Manifest.permission.READ_EXTERNAL_STORAGE,
+            android.Manifest.permission.WRITE_EXTERNAL_STORAGE
+        )
+    )
+
+    // تشغيل الطلب تلقائياً عند فتح الشاشة
+    LaunchedEffect(true) {
+        if (!storagePermissions.allPermissionsGranted) {
+            storagePermissions.launchMultiplePermissionRequest()
+        }
+    }
+    // ---------------------------------------
+
     Scaffold(
         topBar = {
             TopAppBar(title = { Text(stringResource(R.string.app_name)) })
@@ -64,7 +82,14 @@ private fun MainScreen(
                 ) { uri: android.net.Uri? -> uri?.let { onFileSelected(it) } }
 
                 Button(
-                    onClick = { launcher.launch("audio/*") },
+                    onClick = { 
+                        // التأكد من الإذن قبل فتح الاستوديو
+                        if (storagePermissions.allPermissionsGranted) {
+                            launcher.launch("audio/*")
+                        } else {
+                            storagePermissions.launchMultiplePermissionRequest()
+                        }
+                    },
                     enabled = !isRecording && canTranscribe,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
                 ) {
