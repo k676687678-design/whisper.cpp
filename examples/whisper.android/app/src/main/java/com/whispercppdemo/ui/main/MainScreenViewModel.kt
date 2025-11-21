@@ -21,6 +21,8 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import java.io.File
+import com.arthenica.ffmpegkit.FFmpegKit
+import com.arthenica.ffmpegkit.ReturnCode
 
 private const val LOG_TAG = "MainScreenViewModel"
 
@@ -35,7 +37,7 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
     private val modelsPath = File(application.filesDir, "models")
     private val samplesPath = File(application.filesDir, "samples")
     private var recorder: Recorder = Recorder()
-    private var whisperContext: com.whispercpp.whisper.WhisperContext? = null
+    private var whisperContext: WhisperContext? = null
     private var mediaPlayer: MediaPlayer? = null
     private var recordedFile: File? = null
 
@@ -47,18 +49,19 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
     }
 
     private suspend fun printSystemInfo() {
-        printMessage(String.format("System Info: %s\n", com.whispercpp.whisper.WhisperContext.getSystemInfo()))
+        printMessage(String.format("System Info: %s\n", WhisperContext.getSystemInfo()))
     }
 
     private suspend fun loadData() {
-        printMessage("Loading data...\n")
+        printMessage("Initializing...\n")
         try {
-            copyAssets()
+            // لم نعد بحاجة لنسخ النموذج للخارج، سنقرأه من Assets مباشرة
+            // copyAssets() 
             loadBaseModel()
             canTranscribe = true
         } catch (e: Exception) {
             Log.w(LOG_TAG, e)
-            printMessage("${e.localizedMessage}\n")
+            printMessage("Error: ${e.localizedMessage}\n")
         }
     }
 
@@ -66,92 +69,117 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         dataLog += msg
     }
 
-    private suspend fun copyAssets() = withContext(Dispatchers.IO) {
-        modelsPath.mkdirs()
-        samplesPath.mkdirs()
-        //application.copyData("models", modelsPath, ::printMessage)
-        application.copyData("samples", samplesPath, ::printMessage)
-        printMessage("All data copied to working directory.\n")
-    }
-
+    // تحميل النموذج المحقون في التطبيق
     private suspend fun loadBaseModel() = withContext(Dispatchers.IO) {
-        printMessage("Loading model...\n")
-        val models = application.assets.list("models/")
-        if (models != null) {
-            whisperContext = com.whispercpp.whisper.WhisperContext.createContextFromAsset(application.assets, "models/" + models[0])
-            printMessage("Loaded model ${models[0]}.\n")
+        printMessage("Loading Embedded Model (Small)...\n")
+        val models = application.assets.list("models")
+        if (models != null && models.isNotEmpty()) {
+            // هذه الدالة تقرأ النموذج مباشرة من داخل الـ APK دون الحاجة لنسخه
+            whisperContext = WhisperContext.createContextFromAsset(application.assets, "models/" + models[0])
+            printMessage("Model Loaded Successfully: ${models[0]}.\n")
+        } else {
+            printMessage("❌ Error: No embedded model found!\n")
         }
-
-        //val firstModel = modelsPath.listFiles()!!.first()
-        //whisperContext = WhisperContext.createContextFromFile(firstModel.absolutePath)
     }
 
-    fun benchmark() = viewModelScope.launch {
-        runBenchmark(6)
-    }
-
-    fun transcribeSample() = viewModelScope.launch {
-        transcribeAudio(getFirstSample())
-    }
-
-    private suspend fun runBenchmark(nthreads: Int) {
-        if (!canTranscribe) {
-            return
-        }
-
-        canTranscribe = false
-
-        printMessage("Running benchmark. This will take minutes...\n")
-        whisperContext?.benchMemory(nthreads)?.let{ printMessage(it) }
-        printMessage("\n")
-        whisperContext?.benchGgmlMulMat(nthreads)?.let{ printMessage(it) }
-
-        canTranscribe = true
-    }
-
-    private suspend fun getFirstSample(): File = withContext(Dispatchers.IO) {
-        samplesPath.listFiles()!!.first()
-    }
-
-    private suspend fun readAudioSamples(file: File): FloatArray = withContext(Dispatchers.IO) {
-        stopPlayback()
-        startPlayback(file)
-        return@withContext decodeWaveFile(file)
-    }
-
-    private suspend fun stopPlayback() = withContext(Dispatchers.Main) {
-        mediaPlayer?.stop()
-        mediaPlayer?.release()
-        mediaPlayer = null
-    }
-
-    private suspend fun startPlayback(file: File) = withContext(Dispatchers.Main) {
-        mediaPlayer = MediaPlayer.create(application, file.absolutePath.toUri())
-        mediaPlayer?.start()
+    private fun formatSrtTime(timeInMs: Long): String {
+        val sec = timeInMs / 1000
+        val m = timeInMs % 1000
+        val s = sec % 60
+        val min = (sec / 60) % 60
+        val h = sec / 3600
+        return "%02d:%02d:%02d,%03d".format(h, min, s, m)
     }
 
     private suspend fun transcribeAudio(file: File) {
-        if (!canTranscribe) {
-            return
-        }
-
+        if (!canTranscribe) return
         canTranscribe = false
 
         try {
-            printMessage("Reading wave samples... ")
-            val data = readAudioSamples(file)
-            printMessage("${data.size / (16000 / 1000)} ms\n")
-            printMessage("Transcribing data...\n")
+            printMessage("Transcribing...\n")
+            val data = withContext(Dispatchers.IO) { decodeWaveFile(file) }
             val start = System.currentTimeMillis()
-            val text = whisperContext?.transcribeData(data)
+            
+            withContext(Dispatchers.IO) {
+                whisperContext?.transcribeData(data)
+            }
+            
             val elapsed = System.currentTimeMillis() - start
-            printMessage("Done ($elapsed ms): \n$text\n")
+            
+            // محاولة بناء SRT
+            try {
+                val sb = StringBuilder()
+                val segmentCount = whisperContext?.textSegmentCount ?: 0
+                
+                if (segmentCount > 0) {
+                    for (i in 0 until segmentCount) {
+                        val text = whisperContext?.getTextSegment(i) ?: ""
+                        val startTime = (whisperContext?.getTextSegmentStartTime(i) ?: 0) * 10
+                        val endTime = (whisperContext?.getTextSegmentEndTime(i) ?: 0) * 10
+                        
+                        sb.append("${i + 1}\n")
+                        sb.append("${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n")
+                        sb.append("${text.trim()}\n\n")
+                    }
+                    val srtContent = sb.toString()
+                    printMessage("Done ($elapsed ms).\n")
+                    saveSrtToFile(srtContent)
+                } else {
+                    val text = whisperContext?.transcribeData(data)
+                    printMessage("Done ($elapsed ms).\n")
+                    if (!text.isNullOrEmpty()) saveSrtToFile(text, isPlainText = true)
+                }
+            } catch (e: Exception) {
+                val text = whisperContext?.transcribeData(data)
+                if (!text.isNullOrEmpty()) saveSrtToFile(text, isPlainText = true)
+            }
+
         } catch (e: Exception) {
             Log.w(LOG_TAG, e)
-            printMessage("${e.localizedMessage}\n")
+            printMessage("Error: ${e.localizedMessage}\n")
         }
 
         canTranscribe = true
+    }
+
+    private suspend fun saveSrtToFile(content: String, isPlainText: Boolean = false) = withContext(Dispatchers.IO) {
+        try {
+            val path = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
+            val ext = if (isPlainText) "txt" else "srt"
+            val fileName = "whisper_${System.currentTimeMillis()}.$ext"
+            val file = File(path, fileName)
+            file.writeText(content)
+            printMessage("\n✅ Saved: ${file.absolutePath}\n")
+        } catch (e: Exception) {
+            printMessage("\n❌ Save failed. Grant Permissions manually.\n")
+        }
+    }
+
+    fun onFileSelected(uri: android.net.Uri) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                printMessage("Processing file...\n")
+                val contentResolver = application.contentResolver
+                val inputFile = File.createTempFile("input", ".tmp", application.cacheDir)
+                contentResolver.openInputStream(uri)?.use { input ->
+                    java.io.FileOutputStream(inputFile).use { output -> input.copyTo(output) }
+                }
+                
+                val outputFile = File.createTempFile("converted", ".wav", application.cacheDir)
+                val cmd = "-y -i \"${inputFile.absolutePath}\" -ar 16000 -ac 1 -c:a pcm_s16le \"${outputFile.absolutePath}\""
+                
+                val session = FFmpegKit.execute(cmd)
+                
+                if (ReturnCode.isSuccess(session.returnCode)) {
+                    printMessage("✅ Converted. Starting...\n")
+                    transcribeAudio(outputFile)
+                } else {
+                    printMessage("❌ Conversion Failed.\n")
+                }
+            } catch (e: Exception) {
+                printMessage("Error: ${e.message}\n")
+            }
+        }
     }
 
     fun toggleRecord() = viewModelScope.launch {
@@ -162,7 +190,7 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
                 recordedFile?.let { transcribeAudio(it) }
             } else {
                 stopPlayback()
-                val file = getTempFileForRecording()
+                val file = File.createTempFile("recording", "wav")
                 recorder.startRecording(file) { e ->
                     viewModelScope.launch {
                         withContext(Dispatchers.Main) {
@@ -175,14 +203,15 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
                 recordedFile = file
             }
         } catch (e: Exception) {
-            Log.w(LOG_TAG, e)
-            printMessage("${e.localizedMessage}\n")
+            printMessage("Record Error: ${e.localizedMessage}\n")
             isRecording = false
         }
     }
 
-    private suspend fun getTempFileForRecording() = withContext(Dispatchers.IO) {
-        File.createTempFile("recording", "wav")
+    private fun stopPlayback() {
+        mediaPlayer?.stop()
+        mediaPlayer?.release()
+        mediaPlayer = null
     }
 
     override fun onCleared() {
@@ -196,30 +225,9 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
     companion object {
         fun factory() = viewModelFactory {
             initializer {
-                val application =
-                    this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as Application
+                val application = this[ViewModelProvider.AndroidViewModelFactory.APPLICATION_KEY] as Application
                 MainScreenViewModel(application)
             }
         }
-    }
-}
-
-private suspend fun Context.copyData(
-    assetDirName: String,
-    destDir: File,
-    printMessage: suspend (String) -> Unit
-) = withContext(Dispatchers.IO) {
-    assets.list(assetDirName)?.forEach { name ->
-        val assetPath = "$assetDirName/$name"
-        Log.v(LOG_TAG, "Processing $assetPath...")
-        val destination = File(destDir, name)
-        Log.v(LOG_TAG, "Copying $assetPath to $destination...")
-        printMessage("Copying $name...\n")
-        assets.open(assetPath).use { input ->
-            destination.outputStream().use { output ->
-                input.copyTo(output)
-            }
-        }
-        Log.v(LOG_TAG, "Copied $assetPath to $destination")
     }
 }
