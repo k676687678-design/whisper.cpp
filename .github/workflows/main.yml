@@ -1,0 +1,62 @@
+name: Build Whisper Android App
+
+on:
+  push:
+    branches: [ "master", "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      with:
+        submodules: recursive
+
+    - name: Set up JDK 17
+      uses: actions/setup-java@v3
+      with:
+        java-version: '17'
+        distribution: 'temurin'
+
+    - name: Setup Android SDK
+      uses: android-actions/setup-android@v3
+
+    - name: Install NDK
+      run: sdkmanager "ndk;25.2.9519653" "cmake;3.22.1"
+
+    # 1. تحميل مكتبة FFmpeg
+    - name: Download FFmpeg Kit
+      run: |
+        mkdir -p examples/whisper.android/app/libs
+        curl -L -o examples/whisper.android/app/libs/ffmpeg-kit.aar "https://artifactory.appodeal.com/appodeal-public/com/arthenica/ffmpeg-kit-full-gpl/6.0-2.LTS/ffmpeg-kit-full-gpl-6.0-2.LTS.aar"
+
+    # 2. حقن النموذج داخل التطبيق
+    - name: Inject Whisper Small Model
+      run: |
+        # إنشاء مجلد الـ assets إذا لم يكن موجوداً
+        mkdir -p examples/whisper.android/app/src/main/assets/models
+        
+        echo "Downloading Model to Assets folder..."
+        cd examples/whisper.android/app/src/main/assets/models
+        
+        # تحميل النموذج مباشرة إلى مجلد المصادر
+        curl -L -O https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small.bin
+        
+        echo "Model Size:"
+        ls -lh
+
+    - name: Build APK
+      run: |
+        cd examples/whisper.android
+        chmod +x gradlew
+        # بناء النسخة المجمعة
+        ./gradlew assembleDebug --stacktrace
+
+    - name: Upload APK
+      uses: actions/upload-artifact@v4
+      with:
+        name: whisper-offline-app
+        path: examples/whisper.android/app/build/outputs/apk/debug/app-debug.apk
