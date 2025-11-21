@@ -34,6 +34,27 @@ class WhisperContext private constructor(private var ptr: Long) {
             }
         }
     }
+    
+    // --- إضافة دوال الوصول العام (Public Accessors) لدعم SRT ---
+    
+    // هذه الدوال مطلوبة لكي يستطيع ViewModel قراءة التوقيت وبناء ملف SRT
+    
+    suspend fun getTextSegmentCount(): Int = withContext(scope.coroutineContext) {
+        return@withContext WhisperLib.getTextSegmentCount(ptr)
+    }
+
+    suspend fun getTextSegment(index: Int): String = withContext(scope.coroutineContext) {
+        return@withContext WhisperLib.getTextSegment(ptr, index)
+    }
+
+    suspend fun getTextSegmentStartTime(index: Int): Long = withContext(scope.coroutineContext) {
+        return@withContext WhisperLib.getTextSegmentT0(ptr, index)
+    }
+
+    suspend fun getTextSegmentEndTime(index: Int): Long = withContext(scope.coroutineContext) {
+        return@withContext WhisperLib.getTextSegmentT1(ptr, index)
+    }
+    // -------------------------------------------------------
 
     suspend fun benchMemory(nthreads: Int): String = withContext(scope.coroutineContext) {
         return@withContext WhisperLib.benchMemcpy(nthreads)
