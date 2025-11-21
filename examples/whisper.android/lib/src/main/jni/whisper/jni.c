@@ -14,87 +14,45 @@
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,     TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN,     TAG, __VA_ARGS__)
 
-static inline int min(int a, int b) {
-    return (a < b) ? a : b;
-}
-
-static inline int max(int a, int b) {
-    return (a > b) ? a : b;
-}
-
+// --- Helper Structures for InputStream ---
 struct input_stream_context {
     size_t offset;
     JNIEnv * env;
     jobject thiz;
     jobject input_stream;
-
     jmethodID mid_available;
     jmethodID mid_read;
 };
 
+// --- Stream Callback Functions ---
 size_t inputStreamRead(void * ctx, void * output, size_t read_size) {
     struct input_stream_context* is = (struct input_stream_context*)ctx;
-
     jint avail_size = (*is->env)->CallIntMethod(is->env, is->input_stream, is->mid_available);
     jint size_to_copy = read_size < avail_size ? (jint)read_size : avail_size;
-
     jbyteArray byte_array = (*is->env)->NewByteArray(is->env, size_to_copy);
-
     jint n_read = (*is->env)->CallIntMethod(is->env, is->input_stream, is->mid_read, byte_array, 0, size_to_copy);
 
     if (size_to_copy != read_size || size_to_copy != n_read) {
-        LOGI("Insufficient Read: Req=%zu, ToCopy=%d, Available=%d", read_size, size_to_copy, n_read);
+        // LOGI("Insufficient Read: Req=%zu, ToCopy=%d, Available=%d", read_size, size_to_copy, n_read);
     }
 
     jbyte* byte_array_elements = (*is->env)->GetByteArrayElements(is->env, byte_array, NULL);
     memcpy(output, byte_array_elements, size_to_copy);
     (*is->env)->ReleaseByteArrayElements(is->env, byte_array, byte_array_elements, JNI_ABORT);
-
     (*is->env)->DeleteLocalRef(is->env, byte_array);
-
     is->offset += size_to_copy;
-
     return size_to_copy;
 }
+
 bool inputStreamEof(void * ctx) {
     struct input_stream_context* is = (struct input_stream_context*)ctx;
-
     jint result = (*is->env)->CallIntMethod(is->env, is->input_stream, is->mid_available);
     return result <= 0;
 }
-void inputStreamClose(void * ctx) {
 
-}
+void inputStreamClose(void * ctx) { }
 
-JNIEXPORT jlong JNICALL
-Java_com_whispercppdemo_whisper_WhisperLib_00024Companion_initContextFromInputStream(
-        JNIEnv *env, jobject thiz, jobject input_stream) {
-    UNUSED(thiz);
-
-    struct whisper_context *context = NULL;
-    struct whisper_model_loader loader = {};
-    struct input_stream_context inp_ctx = {};
-
-    inp_ctx.offset = 0;
-    inp_ctx.env = env;
-    inp_ctx.thiz = thiz;
-    inp_ctx.input_stream = input_stream;
-
-    jclass cls = (*env)->GetObjectClass(env, input_stream);
-    inp_ctx.mid_available = (*env)->GetMethodID(env, cls, "available", "()I");
-    inp_ctx.mid_read = (*env)->GetMethodID(env, cls, "read", "([BII)I");
-
-    loader.context = &inp_ctx;
-    loader.read = inputStreamRead;
-    loader.eof = inputStreamEof;
-    loader.close = inputStreamClose;
-
-    loader.eof(loader.context);
-
-    context = whisper_init(&loader);
-    return (jlong) context;
-}
-
+// --- Asset Manager Helper Functions ---
 static size_t asset_read(void *ctx, void *output, size_t read_size) {
     return AAsset_read((AAsset *) ctx, output, read_size);
 }
@@ -120,7 +78,7 @@ static struct whisper_context *whisper_init_from_asset(
         return NULL;
     }
 
-    whisper_model_loader loader = {
+    struct whisper_model_loader loader = {
             .context = asset,
             .read = &asset_read,
             .eof = &asset_is_eof,
@@ -130,6 +88,39 @@ static struct whisper_context *whisper_init_from_asset(
     return whisper_init_with_params(&loader, whisper_context_default_params());
 }
 
+// =================================================================================================
+// JNI EXPORTS
+// Note: Function names must match package: com.whispercpp.whisper, Class: WhisperLib, Object: Companion
+// =================================================================================================
+
+// 1. Init from Input Stream
+JNIEXPORT jlong JNICALL
+Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromInputStream(
+        JNIEnv *env, jobject thiz, jobject input_stream) {
+    UNUSED(thiz);
+    struct whisper_context *context = NULL;
+    struct whisper_model_loader loader = {};
+    struct input_stream_context inp_ctx = {};
+
+    inp_ctx.offset = 0;
+    inp_ctx.env = env;
+    inp_ctx.thiz = thiz;
+    inp_ctx.input_stream = input_stream;
+
+    jclass cls = (*env)->GetObjectClass(env, input_stream);
+    inp_ctx.mid_available = (*env)->GetMethodID(env, cls, "available", "()I");
+    inp_ctx.mid_read = (*env)->GetMethodID(env, cls, "read", "([BII)I");
+
+    loader.context = &inp_ctx;
+    loader.read = inputStreamRead;
+    loader.eof = inputStreamEof;
+    loader.close = inputStreamClose;
+
+    context = whisper_init(&loader);
+    return (jlong) context;
+}
+
+// 2. Init from Asset
 JNIEXPORT jlong JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromAsset(
         JNIEnv *env, jobject thiz, jobject assetManager, jstring asset_path_str) {
@@ -141,6 +132,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContextFromAsset(
     return (jlong) context;
 }
 
+// 3. Init from File
 JNIEXPORT jlong JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
         JNIEnv *env, jobject thiz, jstring model_path_str) {
@@ -152,6 +144,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_initContext(
     return (jlong) context;
 }
 
+// 4. Free Context
 JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_freeContext(
         JNIEnv *env, jobject thiz, jlong context_ptr) {
@@ -161,6 +154,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_freeContext(
     whisper_free(context);
 }
 
+// 5. Full Transcribe (Engine)
 JNIEXPORT void JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint num_threads, jfloatArray audio_data) {
@@ -169,14 +163,12 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     jfloat *audio_data_arr = (*env)->GetFloatArrayElements(env, audio_data, NULL);
     const jsize audio_data_length = (*env)->GetArrayLength(env, audio_data);
 
-    // The below adapted from the Objective-C iOS sample
     struct whisper_full_params params = whisper_full_default_params(WHISPER_SAMPLING_GREEDY);
-    params.print_realtime = true;
+    params.print_realtime = false;
     params.print_progress = false;
-    params.print_timestamps = true;
-    params.print_special = false;
+    params.print_timestamps = true; // Important for SRT
     params.translate = false;
-    params.language = "en";
+    params.language = "auto"; // Auto-detect language
     params.n_threads = num_threads;
     params.offset_ms = 0;
     params.no_context = true;
@@ -184,7 +176,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
 
     whisper_reset_timings(context);
 
-    LOGI("About to run whisper_full");
+    LOGI("Running whisper_full with %d threads", num_threads);
     if (whisper_full(context, params, audio_data_arr, audio_data_length) != 0) {
         LOGI("Failed to run the model");
     } else {
@@ -193,6 +185,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_fullTranscribe(
     (*env)->ReleaseFloatArrayElements(env, audio_data, audio_data_arr, JNI_ABORT);
 }
 
+// 6. Get Segment Count
 JNIEXPORT jint JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentCount(
         JNIEnv *env, jobject thiz, jlong context_ptr) {
@@ -202,16 +195,17 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentCount(
     return whisper_full_n_segments(context);
 }
 
+// 7. Get Segment Text
 JNIEXPORT jstring JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegment(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint index) {
     UNUSED(thiz);
     struct whisper_context *context = (struct whisper_context *) context_ptr;
     const char *text = whisper_full_get_segment_text(context, index);
-    jstring string = (*env)->NewStringUTF(env, text);
-    return string;
+    return (*env)->NewStringUTF(env, text);
 }
 
+// 8. Get Start Time
 JNIEXPORT jlong JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentT0(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint index) {
@@ -220,6 +214,7 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentT0(
     return whisper_full_get_segment_t0(context, index);
 }
 
+// 9. Get End Time
 JNIEXPORT jlong JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentT1(
         JNIEnv *env, jobject thiz, jlong context_ptr, jint index) {
@@ -228,23 +223,23 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_getTextSegmentT1(
     return whisper_full_get_segment_t1(context, index);
 }
 
+// 10. System Info
 JNIEXPORT jstring JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_getSystemInfo(
         JNIEnv *env, jobject thiz
 ) {
     UNUSED(thiz);
     const char *sysinfo = whisper_print_system_info();
-    jstring string = (*env)->NewStringUTF(env, sysinfo);
-    return string;
+    return (*env)->NewStringUTF(env, sysinfo);
 }
 
+// 11. Benchmarks
 JNIEXPORT jstring JNICALL
 Java_com_whispercpp_whisper_WhisperLib_00024Companion_benchMemcpy(JNIEnv *env, jobject thiz,
                                                                       jint n_threads) {
     UNUSED(thiz);
     const char *bench_ggml_memcpy = whisper_bench_memcpy_str(n_threads);
-    jstring string = (*env)->NewStringUTF(env, bench_ggml_memcpy);
-    return string;
+    return (*env)->NewStringUTF(env, bench_ggml_memcpy);
 }
 
 JNIEXPORT jstring JNICALL
@@ -252,6 +247,5 @@ Java_com_whispercpp_whisper_WhisperLib_00024Companion_benchGgmlMulMat(JNIEnv *en
                                                                           jint n_threads) {
     UNUSED(thiz);
     const char *bench_ggml_mul_mat = whisper_bench_ggml_mul_mat_str(n_threads);
-    jstring string = (*env)->NewStringUTF(env, bench_ggml_mul_mat);
-    return string;
+    return (*env)->NewStringUTF(env, bench_ggml_mul_mat);
 }
