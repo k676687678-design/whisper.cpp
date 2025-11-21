@@ -1,5 +1,7 @@
 package com.whispercppdemo.ui.main
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
@@ -22,7 +24,8 @@ fun MainScreen(viewModel: MainScreenViewModel) {
         messageLog = viewModel.dataLog,
         onBenchmarkTapped = viewModel::benchmark,
         onTranscribeSampleTapped = viewModel::transcribeSample,
-        onRecordTapped = viewModel::toggleRecord
+        onRecordTapped = viewModel::toggleRecord,
+        onFileSelected = viewModel::onFileSelected
     )
 }
 
@@ -34,14 +37,13 @@ private fun MainScreen(
     messageLog: String,
     onBenchmarkTapped: () -> Unit,
     onTranscribeSampleTapped: () -> Unit,
-    onRecordTapped: () -> Unit
+    onRecordTapped: () -> Unit,
+    onFileSelected: (android.net.Uri) -> Unit
 ) {
     Scaffold(
         topBar = {
-            TopAppBar(
-                title = { Text(stringResource(R.string.app_name)) }
-            )
-        },
+            TopAppBar(title = { Text(stringResource(R.string.app_name)) })
+        }
     ) { innerPadding ->
         Column(
             modifier = Modifier
@@ -53,12 +55,32 @@ private fun MainScreen(
                     BenchmarkButton(enabled = canTranscribe, onClick = onBenchmarkTapped)
                     TranscribeSampleButton(enabled = canTranscribe, onClick = onTranscribeSampleTapped)
                 }
+                
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // زر رفع الملفات
+                val launcher = rememberLauncherForActivityResult(
+                    contract = ActivityResultContracts.GetContent()
+                ) { uri: android.net.Uri? -> uri?.let { onFileSelected(it) } }
+
+                Button(
+                    onClick = { launcher.launch("audio/*") },
+                    enabled = !isRecording && canTranscribe,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)
+                ) {
+                    Text("Upload Audio File")
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+
                 RecordButton(
                     enabled = canTranscribe,
                     isRecording = isRecording,
                     onClick = onRecordTapped
                 )
             }
+            
+            Spacer(modifier = Modifier.height(16.dp))
             MessageLog(messageLog)
         }
     }
@@ -67,22 +89,23 @@ private fun MainScreen(
 @Composable
 private fun MessageLog(log: String) {
     SelectionContainer {
-        Text(modifier = Modifier.verticalScroll(rememberScrollState()), text = log)
+        Text(
+            modifier = Modifier
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
+            text = log
+        )
     }
 }
 
 @Composable
 private fun BenchmarkButton(enabled: Boolean, onClick: () -> Unit) {
-    Button(onClick = onClick, enabled = enabled) {
-        Text("Benchmark")
-    }
+    Button(onClick = onClick, enabled = enabled) { Text("Benchmark") }
 }
 
 @Composable
 private fun TranscribeSampleButton(enabled: Boolean, onClick: () -> Unit) {
-    Button(onClick = onClick, enabled = enabled) {
-        Text("Transcribe sample")
-    }
+    Button(onClick = onClick, enabled = enabled) { Text("Sample") }
 }
 
 @OptIn(ExperimentalPermissionsApi::class)
@@ -90,25 +113,16 @@ private fun TranscribeSampleButton(enabled: Boolean, onClick: () -> Unit) {
 private fun RecordButton(enabled: Boolean, isRecording: Boolean, onClick: () -> Unit) {
     val micPermissionState = rememberPermissionState(
         permission = android.Manifest.permission.RECORD_AUDIO,
-        onPermissionResult = { granted ->
-            if (granted) {
-                onClick()
-            }
-        }
+        onPermissionResult = { if (it) onClick() }
     )
-    Button(onClick = {
-        if (micPermissionState.status.isGranted) {
-            onClick()
-        } else {
-            micPermissionState.launchPermissionRequest()
-        }
-     }, enabled = enabled) {
-        Text(
-            if (isRecording) {
-                "Stop recording"
-            } else {
-                "Start recording"
-            }
-        )
+    Button(
+        onClick = {
+            if (micPermissionState.status.isGranted) onClick() 
+            else micPermissionState.launchPermissionRequest()
+        },
+        enabled = enabled,
+        modifier = Modifier.fillMaxWidth()
+    ) {
+        Text(if (isRecording) "Stop Recording" else "Start Recording")
     }
 }
