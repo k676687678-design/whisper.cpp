@@ -9,6 +9,7 @@ import com.whispercppdemo.ui.main.MainScreenViewModel
 import com.whispercppdemo.ui.theme.WhisperCppDemoTheme
 
 class MainActivity : ComponentActivity() {
+    // تم التصحيح: استدعاء factory() فارغة كما في الكود الأصلي
     private val viewModel: MainScreenViewModel by viewModels { MainScreenViewModel.factory() }
 
     override fun onCreate(savedInstanceState: Bundle?) {
