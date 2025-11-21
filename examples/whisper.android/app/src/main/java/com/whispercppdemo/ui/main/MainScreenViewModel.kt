@@ -85,27 +85,16 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         }
     }
 
-    // --- تم إصلاح دالة البنشمارك ---
-    fun benchmark() = viewModelScope.launch {
-        if (!canTranscribe) return@launch
-        canTranscribe = false
-        printMessage("Running benchmark...\n")
-        withContext(Dispatchers.IO) {
-            whisperContext?.benchMemory(6)?.let { printMessage(it) }
-            printMessage("\n")
-            whisperContext?.benchGgmlMulMat(6)?.let { printMessage(it) }
-        }
-        canTranscribe = true
-    }
-
-    // --- تم إصلاح دالة العينة ---
-    fun transcribeSample() = viewModelScope.launch {
-        val files = samplesPath.listFiles()
-        if (files != null && files.isNotEmpty()) {
-            transcribeAudio(files.first())
-        } else {
-            printMessage("No sample files found.\n")
-        }
+    // --- دوال تحويل الوقت لصيغة SRT ---
+    private fun formatSrtTime(timeIn10Ms: Long): String {
+        // الوقت يأتي من المكتبة بوحدات 10 مللي ثانية
+        val timeInMs = timeIn10Ms * 10
+        val sec = timeInMs / 1000
+        val m = timeInMs % 1000
+        val s = sec % 60
+        val min = (sec / 60) % 60
+        val h = sec / 3600
+        return "%02d:%02d:%02d,%03d".format(h, min, s, m)
     }
 
     private suspend fun transcribeAudio(file: File) {
@@ -117,40 +106,61 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
             val data = withContext(Dispatchers.IO) { decodeWaveFile(file) }
             val start = System.currentTimeMillis()
             
-            // المكتبة الحالية تدعم فقط إرجاع النص كاملاً
-            val text = withContext(Dispatchers.IO) {
+            // 1. تشغيل المعالجة (Inference)
+            // هذه الدالة تقوم بتشغيل النموذج وتخزين النتائج في الذاكرة
+            withContext(Dispatchers.IO) {
                 whisperContext?.transcribeData(data)
             }
             
             val elapsed = System.currentTimeMillis() - start
-            printMessage("Done ($elapsed ms): \n$text\n")
-
-            // حفظ النص في ملف
-            if (!text.isNullOrEmpty()) {
-                saveTextToFile(text)
+            
+            // 2. استخراج النتائج وبناء ملف SRT
+            val sb = StringBuilder()
+            // نستخدم الدالة الجديدة التي أضفناها في LibWhisper.kt
+            val segmentCount = whisperContext?.getTextSegmentCount() ?: 0
+            
+            if (segmentCount > 0) {
+                for (i in 0 until segmentCount) {
+                    val text = whisperContext?.getTextSegment(i) ?: ""
+                    val startTime = whisperContext?.getTextSegmentStartTime(i) ?: 0
+                    val endTime = whisperContext?.getTextSegmentEndTime(i) ?: 0
+                    
+                    sb.append("${i + 1}\n")
+                    sb.append("${formatSrtTime(startTime)} --> ${formatSrtTime(endTime)}\n")
+                    sb.append("${text.trim()}\n\n")
+                }
+                
+                val finalSrt = sb.toString()
+                printMessage("Done ($elapsed ms).\n")
+                
+                // الحفظ
+                saveSrtToFile(finalSrt)
+            } else {
+                printMessage("No segments found. Check model or audio.\n")
             }
 
         } catch (e: Exception) {
             Log.w(LOG_TAG, e)
-            printMessage("Error: ${e.localizedMessage}\n")
+            printMessage("Error: ${e.message}\n")
         }
 
         canTranscribe = true
     }
 
-    // دالة حفظ النص (بدلاً من SRT لأن التوقيت غير مدعوم حالياً)
-    private suspend fun saveTextToFile(text: String) = withContext(Dispatchers.IO) {
+    // دالة حفظ الملف في التنزيلات
+    private suspend fun saveSrtToFile(content: String) = withContext(Dispatchers.IO) {
         try {
             val path = android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS)
-            val fileName = "whisper_${System.currentTimeMillis()}.txt"
+            val fileName = "whisper_${System.currentTimeMillis()}.srt"
             val file = File(path, fileName)
-            file.writeText(text)
-            printMessage("\n✅ Text Saved to Downloads: ${file.name}\n")
+            file.writeText(content)
+            printMessage("\n✅ SAVED SRT: ${file.absolutePath}\n")
         } catch (e: Exception) {
-            printMessage("\n❌ Save failed. Check Permissions manually.\n")
+            printMessage("\n❌ Save failed. Grant Storage Permissions manually!\n")
         }
     }
 
+    // دالة رفع وتحويل الملفات
     fun onFileSelected(uri: android.net.Uri) {
         viewModelScope.launch(Dispatchers.IO) {
             try {
@@ -161,8 +171,8 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
                     java.io.FileOutputStream(inputFile).use { output -> input.copyTo(output) }
                 }
                 
-                // التحويل باستخدام FFmpeg
                 val outputFile = File.createTempFile("converted", ".wav", application.cacheDir)
+                // تحويل إلى 16kHz 16-bit Mono باستخدام FFmpeg
                 val cmd = "-y -i \"${inputFile.absolutePath}\" -ar 16000 -ac 1 -c:a pcm_s16le \"${outputFile.absolutePath}\""
                 
                 val session = FFmpegKit.execute(cmd)
@@ -179,6 +189,7 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         }
     }
 
+    // دوال التسجيل والتحكم
     fun toggleRecord() = viewModelScope.launch {
         try {
             if (isRecording) {
@@ -202,6 +213,27 @@ class MainScreenViewModel(private val application: Application) : ViewModel() {
         } catch (e: Exception) {
             printMessage("Record Error: ${e.localizedMessage}\n")
             isRecording = false
+        }
+    }
+    
+    fun benchmark() = viewModelScope.launch {
+        if (!canTranscribe) return@launch
+        canTranscribe = false
+        printMessage("Running benchmark...\n")
+        withContext(Dispatchers.IO) {
+            whisperContext?.benchMemory(6)?.let{ printMessage(it) }
+            printMessage("\n")
+            whisperContext?.benchGgmlMulMat(6)?.let{ printMessage(it) }
+        }
+        canTranscribe = true
+    }
+    
+    fun transcribeSample() = viewModelScope.launch {
+        val files = samplesPath.listFiles()
+        if (files != null && files.isNotEmpty()) {
+            transcribeAudio(files.first())
+        } else {
+            printMessage("No sample file found.\n")
         }
     }
 
